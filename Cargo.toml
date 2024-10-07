@@ -1,0 +1,14 @@
+[workspace]
+members = ["proc-macro"]
+
+[package]
+name = "functional-ebnf"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+new_range = []
+
+[dependencies]
+
+# fn-bnf-macro = { path = "./proc-macro" }
