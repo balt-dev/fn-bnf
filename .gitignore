@@ -1,2 +1,8 @@
 /target
 Cargo.lock
+/.vscode
+/.idea
+/cov
+*.profraw
+coverage.*
+!/.github/workflows/coverage.yml

@@ -1,95 +1,45 @@
-use indexmap::{IndexMap, IndexSet};
+
+
+// thank you
+// i'll say goodbye soon
+// though it's the end of the world
+// don't blame yourself now
+//
+// and if it's true
+// i will surround you
+// and give life to a world
+// that's our own
+//
+// porter robinson - goodbye to a world
+// 【=◈︿◈=】
+
+use indexmap::IndexMap;
 use proc_macro::TokenStream;
 use proc_macro_error::{Diagnostic, Level};
-use std::default::Default;
 use proc_macro2::Span;
-use quote::quote;
+use quote::{quote, TokenStreamExt};
 use syn::{
-    ext::IdentExt, parse::{Parse, ParseStream}, parse_macro_input, punctuated::Punctuated, spanned::Spanned, token, AngleBracketedGenericArguments as GenericArgs, Attribute, Expr, ExprLit, Generics, Ident, Lit, LitInt, RangeLimits, Stmt, Token, Type, Visibility
+    ext::IdentExt,
+    parse::{Parse, ParseStream},
+    parse_macro_input,
+    punctuated::Punctuated,
+    spanned::Spanned, Attribute, Expr,
+    GenericParam, Generics, Ident, Lifetime, LifetimeParam,
+    Stmt, Token, Type, Visibility
 };
 use itertools::Itertools;
 
 mod kw {
     syn::custom_keyword!(grammar);
+    syn::custom_keyword!(from);
 }
-
-/*
-Rough API:
-
-fn parse_int(&mut self, input: &mut &str, start: usize)
-    -> Result<TokenTree, ParseError>
-{
-    // uhh parse an integer here idk
-}
-
-define! {
-    pub grammar(str) Grammar {
-        <hello> = [3..5] <world> parse_int;
-        <world> = * "hello";
-    }
-}
-
-mod __#ident {
-    impl crate::Rule<Rule, str> for Rule {
-        fn parse(&mut self, input: &mut &str, start: usize)
-            -> Result<TokenTree, ParseError>
-        {
-            let original = *input;
-            let mut span = (start) .. (start);
-            let mut children = vec![];
-
-            match *self {
-                Rule::hello => 'b: {
-                    {
-                        if let Ok(res) = || {
-                            {
-                                // if repetitions is none, don't emit loop
-                                // if repetitions is unbounded on left, treat as 0..
-                                // if repetitions is bounded on start: (3..)
-                                for _ in 0 .. 3 {
-                                    let token = Rule::world.parse(input, span.end)?;
-                                    span.end = token.span.end;
-                                // if silent, don't emit
-                                    children.push(token);
-                                }
-                                for _ in 3 .. { // if bounded on both (3..5), do that here
-                                    let Ok(token) =
-                                        Rule::world.parse(input, span.end)?
-                                        else { break; }
-                                    span.end = token.span.end;
-                                // if silent, don't emit
-                                    children.push(token);
-                                }
-                            }
-                        }() { break 'b; }
-                    }
-
-                }
-            }
-
-            Ok(TokenTree { rule: *self, span, children, source: &original[..(span.end - span.start)] })
-        }
-    }
-
-    pub enum Rule {
-        hello, world
-    }
-}
-
-pub use __#ident::Rule as #ident;
-
-NOTE: A left-recursive grammar should be a _compilation error!_
-They're not super hard to detect, so it'd be better if they were.
- */
 
 #[derive(Debug)]
 struct Grammar {
     attrs: Vec<Attribute>,
     vis: Visibility,
-    grammar_token: kw::grammar,
     ident: Ident,
     ty: Type,
-    brace_token: token::Brace,
     rules: IndexMap<Ident, RuleBody>,
 }
 
@@ -97,266 +47,355 @@ impl Parse for Grammar {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let attrs = input.call(Attribute::parse_outer)?;
         let vis: Visibility = input.parse()?;
-        let grammar_token = input.parse::<kw::grammar>()?;
+        input.parse::<kw::grammar>()?;
         let ident: Ident = input.parse()?;
         input.parse::<Token![<]>()?;
         let ty: Type = input.parse()?;
         input.parse::<Token![>]>()?;
         let body;
-        let brace_token = syn::braced!(body in input);
+        syn::braced!(body in input);
         let mut rules = IndexMap::new();
 
         while !body.is_empty() {
-            body.parse::<Token![<]>()?;
             let name = body.call(Ident::parse_any)?;
             let generics = Generics::parse(&body)?;
-            body.parse::<Token![>]>()?;
+            let mut fields = Fields::Unit;
+            if body.peek(syn::token::Brace) {
+                fields = Fields::Structured(body.parse()?);
+            }
+            body.parse::<Token![:]>()?;
+            let ty = body.parse::<Type>()?;
+            let mut func = None;
+            if body.peek(kw::from) {
+                body.parse::<kw::from>()?;
+                let parens;
+                syn::parenthesized!(parens in body);
+                func = Some(parens.parse::<syn::Expr>()?);
+            }
             body.parse::<Token![=]>()?;
             let definition = body.parse::<RuleGroup>()?;
-            body.parse::<Token![;]>()?;
-            let span = name.span();
+            let end = body.parse::<Token![;]>()?;
+            let mut span = name.span();
+            if let Some(joined) = span.join(end.span) {
+                span = joined;
+            }
 
             if let Some(
-                RuleBody { generics: dupe_generics, span: dupe_span, .. }
+                RuleBody { span: dupe_span, .. }
             ) = rules.insert(name,
-                RuleBody { generics: generics.clone(), span, group: definition }
+                RuleBody { generics, fields, ty, func, span, group: definition }
             ) {
-                let mut def = Diagnostic::spanned(span, Level::Error, "cannot have duplicate rules".into())
-                    .span_note(dupe_span, "first definition of rule here".into());
-                if generics != dupe_generics {
-                    def = def.note("no two rules, even with differing generic arguments, may have the same name".into())
-                             .note("this restriction may be lifted in the future".into());
-                }
-                def.abort();
+                Diagnostic::spanned(span, Level::Error, "cannot have duplicate rules".into())
+                    .span_note(dupe_span, "first definition of rule here".into())
+                    .abort();
             }
         }
 
         Ok(Grammar {
             attrs,
-            vis, grammar_token,
+            vis,
             ident,
-            ty, brace_token,
+            ty,
             rules,
         })
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct RuleGroup {
     options: Punctuated<RulePath, Token![:]>,
 }
 
 impl Parse for RuleGroup {
     fn parse(input: ParseStream) -> syn::Result<Self> {
-        Punctuated::<RulePath, Token![:]>::parse_separated_nonempty(input).map(|options| Self { options })
+        Punctuated::<RulePath, Token![:]>::parse_separated_nonempty(input).map(|options| Self { 
+            options 
+        })
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
+enum Fields {
+    Unit,
+    Structured(syn::FieldsNamed)
+}
+
+impl quote::ToTokens for Fields {
+    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+        match self {
+            Fields::Unit => tokens.append_all(quote!(;).into_iter()),
+            Fields::Structured(fields) 
+                => fields.to_tokens(tokens),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct RuleBody {
+    generics: Generics,
+    fields: Fields,
+    ty: Type,
+    func: Option<Expr>,
+    span: Span,
+    group: RuleGroup,
+}
+
+#[derive(Debug, Clone)]
+struct ElementTy {
+    silent: bool,
+    inner: Expr
+}
+
+impl Parse for ElementTy {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let silent = input.peek(Token![_]);
+        if silent { input.parse::<Token![_]>()?; }
+        input.parse().map(|inner| Self { silent, inner })
+    }
+}
+
+impl quote::ToTokens for ElementTy {
+    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+        self.inner.to_tokens(tokens)
+    }
+}
+
+#[derive(Debug, Clone)]
 struct RulePath {
-    elements: Punctuated<RuleElement, Token![,]>,
+    elements: Punctuated<ElementTy, Token![,]>,
 }
 
 impl Parse for RulePath {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         Ok(Self {
-            elements: Punctuated::<RuleElement, Token![,]>::parse_separated_nonempty(input)?
+            elements: Punctuated::<ElementTy, Token![,]>::parse_separated_nonempty(input)?
         })
     }
 }
 
-#[derive(Debug)]
-struct RuleElement {
-    ty: RuleElementTy,
-    silent: bool,
-    repetitions: (usize, RangeLimits, Option<usize>),
-}
-
-impl RuleElement {
-    fn tokenize(&self) -> Vec<Stmt> {
-        vec![] // TODO
-    }
-}
-
-#[derive(Debug)]
-enum RuleElementTy {
-    Rule(Ident, Option<GenericArgs>),
-    Callable(Expr),
-    Group(Box<RuleGroup>),
-}
-
-// *[..5] "hello"
-impl Parse for RuleElement {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        let mut silent = false;
-        let mut repetitions = (1, RangeLimits::Closed(Default::default()), Some(1));
-        if input.peek(Token![*]) {
-            input.parse::<Token![*]>()?;
-            silent = true;
-        }
-        if input.peek(syn::token::Bracket) {
-            let expr = input.parse::<syn::ExprArray>()?;
-            if expr.elems.len() != 1 {
-                return Err(syn::Error::new(expr.span(), "malformed repetition count"));
+impl RuleBody {
+    fn tokenize(self, name: &Ident, rule_ty: &Type) -> Vec<Stmt> {
+        let Self { mut generics, fields, ty, func, span, group } = self;
+        let mut impl_generics = generics.clone();
+        impl_generics.params.push(GenericParam::Lifetime(
+            LifetimeParam::new(Lifetime::new("'input", name.span()))
+        ));
+        for param in &mut generics.params {
+            match param {
+                GenericParam::Lifetime(lt) => {
+                    lt.colon_token = None;
+                    lt.bounds.clear();
+                }
+                GenericParam::Type(ty) => {
+                    ty.colon_token = None;
+                    ty.bounds.clear();
+                }
+                GenericParam::Const(cst) => {
+                    *param = GenericParam::Type(syn::TypeParam {
+                        attrs: cst.attrs.clone(), 
+                        ident: cst.ident.clone(),
+                        colon_token: None,
+                        bounds: Default::default(),
+                        eq_token: None,
+                        default: None
+                    });
+                }
             }
-            let Some(Expr::Range(range)) = expr.elems.first() else {
-                return Err(syn::Error::new(expr.span(), "repetition count must be a range"));
+        }
+        let mut min_options = None::<usize>;
+        let mut max_options = None::<usize>;
+        for option in group.options.iter() {
+            let count = option.elements.iter().filter(|el| !el.silent).count();
+            min_options = Some(min_options.map_or(count, |m| m.min(count)));
+            max_options = Some(max_options.map_or(count, |m| m.max(count)));
+        }
+        let min_options = min_options.unwrap_or(0);
+        let max_options = max_options.unwrap_or(0);
+        let mut element_defs = Vec::<Stmt>::new();
+
+        element_defs.push(syn::parse_quote!(
+            let _ = ("min_options: ", #min_options, "max_options:", #max_options);
+        ));
+
+        let variable_names = (0..max_options)
+            .map(|n| syn::Ident::new_raw(&format!("arg_{n}"), span.clone()))
+            .collect_vec();
+        let optional_variable_defs = variable_names.iter()
+            .skip(min_options)
+            .map(|id| -> Stmt {syn::parse_quote_spanned! {span.clone()=> let #id = None;}})
+            .collect_vec();
+    
+        for (i, option) in group.options.iter().enumerate() {
+            let at_end = i + 1 >= group.options.len();
+            let mut next_args = Vec::<Stmt>::new();
+
+            let return_expr: Expr = if let Some(func) = &func {
+                syn::parse_quote_spanned!(
+                    span.clone()=> 
+                    (#func)(#(#variable_names),*)
+                        .map_err(|err| {
+                            *index = before_index;
+                            *input = before_input;
+                            ::fn_bnf::ParseError::new(
+                                Some(::fn_bnf::Box::new(err)),
+                                ::fn_bnf::get_name_string::<#rule_ty, _>(&rule),
+                                *index
+                            )
+                        }
+                    )
+                )
+            } else {
+                syn::parse_quote_spanned!(span=> Ok((#(#variable_names),*)))
             };
-            let mut range = range.clone();
-            let start = range.start.get_or_insert_with(||
-                Box::new(Expr::Lit(ExprLit {
-                    attrs: vec![],
-                    lit: Lit::Int(LitInt::new("0", range.limits.span()))
+
+            let mut iter = option.elements.iter();
+            let Some(first) = iter.next() else {
+                element_defs.extend::<Vec<Stmt>>(syn::parse_quote_spanned!(span.clone()=>
+                    return #return_expr;
+                ));
+                break;
+            };
+
+            let mut name_iter = variable_names.iter();
+            if !first.silent {
+                let _ = name_iter.next();
+            }
+
+            let fail_condition: Stmt = if at_end {
+                syn::parse_quote_spanned!(span.clone()=> {
+                    *input = before_input;
+                    *index = before_index;
+                    return Err(::fn_bnf::ParseError::new(
+                        Some(::fn_bnf::Box::new(err)),
+                        ::fn_bnf::get_name_string::<#rule_ty, _>(&rule),
+                        *index
+                    ))
                 })
-            ));
-            let Expr::Lit(ExprLit { lit: Lit::Int(ref int), .. }) = &**start else {
-                return Err(syn::Error::new(start.span(), "repetition bounds must be integer literals"));
+            } else {
+                syn::parse_quote_spanned!(span.clone()=> {
+                    *input = before_input;
+                    *index = before_index;
+                    break 'b;
+                })
             };
-            let start: usize = int.base10_parse()?;
-            let mut end: Option<usize> = None;
-            if let Some(ref e) = range.end {
-                let Expr::Lit(ExprLit { lit: Lit::Int(ref int), .. }) = &**e else {
-                    return Err(syn::Error::new(start.span(), "repetition bounds must be integer literals"));
-                };
-                let e = int.base10_parse()?;
-                if e < start {
-                    Diagnostic::spanned(range.span(), Level::Error, "repetition count end cannot be greater than start".into())
-                        .abort();
+
+            let names = &mut name_iter;
+            let take_count = min_options.saturating_sub((!first.silent) as usize);
+            for el in (&mut iter).take(take_count) {
+                if el.silent {
+                    next_args.extend::<Vec<Stmt>>(syn::parse_quote_spanned!(el.span()=>
+                        let rule = { #el };
+                        if let Err(err) = ::fn_bnf::Rule::<'input, #rule_ty>::parse_at(&rule, input, index) {
+                            #fail_condition
+                        };
+                    ));
+                    continue;
                 }
-                if matches!(range.limits, RangeLimits::HalfOpen(..)) && start == e {
-                    Diagnostic::spanned(range.span(), Level::Warning, "will match 0 times".into())
-                        .emit();
-                }
-                end = Some(e);
-                
+                let Some(name) = names.next() else { break };
+                next_args.extend::<Vec<Stmt>>(syn::parse_quote_spanned!(el.span()=>
+                    let rule = { #el };
+                    let #name = match ::fn_bnf::Rule::<'input, #rule_ty>::parse_at(&rule, input, index) {
+                        Ok(val) => val,
+                        Err(err) => #fail_condition
+                    };
+                ))
             }
-            repetitions = (start, range.limits, end);
+            for el in &mut iter {
+                if el.silent {
+                    next_args.extend::<Vec<Stmt>>(syn::parse_quote_spanned!(el.span()=>
+                        let rule = { #el };
+                        if let Err(err) = ::fn_bnf::Rule::<'input, #rule_ty>::parse_at(&rule, input, index) {
+                            #fail_condition
+                        };
+                    ));
+                    continue;
+                }
+                let Some(name) = names.next() else { break };
+                next_args.extend::<Vec<Stmt>>(syn::parse_quote_spanned!(el.span()=>
+                    let rule = { #el };
+                    let #name = match ::fn_bnf::Rule::<'input, #rule_ty>::parse_at(&rule, input, index) {
+                        Ok(val) => Some(val),
+                        Err(err) => #fail_condition
+                    };
+                ))
+            }
+
+            let maybe_arg0 = (!first.silent).then(|| -> Stmt {
+                if first.silent {
+                    syn::parse_quote_spanned!(first.span()=> ;)
+                } else if min_options == 0 {
+                    syn::parse_quote_spanned!(first.span()=> let arg_0 = Some(first);)
+                } else {
+                    syn::parse_quote_spanned!(first.span()=> let arg_0 = first;)
+                }
+            }).into_iter();
+
+            element_defs.extend::<Vec<Stmt>>(syn::parse_quote_spanned!(first.span()=> 'b: {
+                let before_index = *index;
+                let before_input = *input;
+                let rule = { #first };
+                match ::fn_bnf::Rule::<'input, #rule_ty>::parse_at(&rule, input, index) {
+                    Ok(first) => {
+                        #(#maybe_arg0)*
+                        #(#next_args)*
+                        return #return_expr;
+                    }
+                    Err(err) => #fail_condition
+                }
+            }));
         }
-        let ty = if input.peek(syn::token::Paren) {
-            let inner;
-            syn::parenthesized!(inner in input);
-            let group = inner.parse()?;
-            RuleElementTy::Group(Box::new(group))
-        } else if input.peek(Token![<]) {
-            input.parse::<Token![<]>()?;
-            let name = input.call(Ident::parse_any)?;
-            let mut args = None;
-            if input.peek(Token![::]) {
-                args = Some(input.call(GenericArgs::parse_turbofish)?);
-            }
-            input.parse::<Token![>]>()?;
-            RuleElementTy::Rule(name, args)
-        } else {
-            let expr: Expr = match input.parse() {
-                Ok(v) => v,
-                Err(err) => Diagnostic::spanned(err.span(), Level::Error, "invalid rule component".into()).note("expected an expression or rule name".into()).abort()
-            };
-            RuleElementTy::Callable(expr)
-        };
 
-        Ok(RuleElement { ty, silent, repetitions })
-    }
-}
+        syn::parse_quote_spanned!(self.span.clone()=>
+            #[allow(non_camel_case_types)]
+            #[doc(hidden)]
+            pub(super) struct #name #generics #fields
 
-#[derive(Debug)]
-struct RuleBody {
-    generics: Generics,
-    span: Span,
-    group: RuleGroup
-}
+            impl #impl_generics ::fn_bnf::Rule<'input, #rule_ty> for #name #generics 
+                where #rule_ty: 'input
+            {
+                const NAME: Option<&'static str> = Some(stringify!(#name));
 
-fn check_left_recursion(rules: &IndexMap<Ident, RuleBody>, group: &RuleGroup, seen: &IndexSet<Ident>) {
-    for option in group.options.iter() {
-        let Some(rule) = option.elements.first() else { continue; };
-        match &rule.ty {
-            RuleElementTy::Callable(_) => (),
-            RuleElementTy::Group(group) => {
-                check_left_recursion(rules, group, seen);
-            }
-            RuleElementTy::Rule(ident, _) => {
-                let Some(RuleBody { group: def, .. }) = rules.get(ident) else {
-                    Diagnostic::spanned(ident.span(), Level::Error, "rule does not exist".into()).abort()
-                };
-                let mut seen = seen.clone();
-                let (index, exists) = seen.replace_full(ident.clone());
-                if let Some(dupe) = exists {
-                    Diagnostic::spanned(dupe.span(), Level::Error, "left recursion detected".into()).note(format!(
-                        "call chain: {}, <{dupe}>",
-                        seen.iter().skip(index).map(|id| format!("<{id}>")).collect::<Vec<_>>().join(", ")
-                    )).abort();
+                type Output = #ty;
+
+                #[allow(unused_variables, unreachable_code, unused_labels, unused_parens)]
+                fn parse_at<'cursor, 'this, 'index>(&'this self, input: &'cursor mut &'input #rule_ty, index: &'index mut usize)
+                    -> Result<Self::Output, ::fn_bnf::ParseError>
+                    where 'input : 'this
+                {
+                    #(#optional_variable_defs)*
+
+                    #(#element_defs)*
+
+                    Err(::fn_bnf::ParseError::new(Some(::fn_bnf::Box::new(::fn_bnf::ExhaustedInput)), Self::NAME, *index))
                 }
-                check_left_recursion(rules, def, &seen);
             }
-        }
+        )
     }
 }
 
 #[proc_macro_error::proc_macro_error]
 #[proc_macro]
+// WHEN WRITING DOCS
+// - mention arg_# and its nuances
+//   - you can use arg_# as a rule, however if it's conditional you will have to .unwrap()
+// - returned references to input have to use the 'input lifetime
 pub fn define(input: TokenStream) -> TokenStream {
     let Grammar {
-        attrs, vis, grammar_token, ident, ty, brace_token, rules
+        attrs, vis, ident, ty, rules, ..
     } = parse_macro_input!(input as Grammar);
-
-    // Detect left recursion
-    for (_, RuleBody {group, .. }) in rules.iter() {
-        let seen = IndexSet::new();
-        check_left_recursion(&rules, group, &seen);
-    }
 
     let mod_name = Ident::new(&format!("__{ident}"), ident.span());
 
-    let rule_names = rules.keys();
-    let (names, genrs) = rules.values().map(
-        |b| {
-            let (a, b, _) = b.generics.split_for_impl();
-            (a, b)
-        }
-    ).tee();
-    let rule_generics = genrs.map(|(_, b)| b);
-    let rule_generic_names = names.map(|(a, _)| a);
-    let rule_groups = rules.values().map(
-        |body| body.group.options.iter().map(
-            |opt| opt.elements.iter().map(
-                |el| el.tokenize()
-            ).collect_vec()
-        ).collect_vec()
-    );
+    // .collect_vec() because quote dum
+    let rules = rules.iter().map(|(name, body)| body.clone().tokenize(name, &ty));
 
     quote!(
+        #( #attrs )*
+        #[allow(non_snake_case)]
         mod #mod_name {
+            #[allow(unused_imports)]
             use super::*;
-            #(
-                #[allow(non_camel_case_types)]
-                struct #rule_names #rule_generics;
-
-                impl #rule_generic_names ::fn_ebnf::Rule < #ty > for #rule_names #rule_generics {
-                    fn parse<'cursor, 'input, 'this: 'input>(&'this self, input: &'cursor mut &'input #ty, start: usize)
-                        -> Result<TokenTree<'input, #ty>, ParseError<#ty>>
-                    {
-                        let orig_input = *input;
-                        let mut active_names = vec![];
-                        #(
-                            match (|| { #( { #( #rule_groups )* } )* } ()) {
-                                Ok(tree) => return Ok(tree),
-                                Err(err) => {
-                                    active_names.extend(&mut err.rule_name());
-                                    *input = orig_input
-                                }
-                            }
-                        )*
-                        
-                        return Err({
-                            let err_string = if active_names.is_empty() {
-                                format!("expected {}", self.name())
-                            } else {
-                                format!("expected {}", active_names.join(","))
-                            };
-                            ParseError::new(Some(stringify!( #rule_names )), err_string)
-                        })
-                    }
-                } 
-            )*
+            #(#(#rules)*)*
         }
 
         #vis use #mod_name as #ident;

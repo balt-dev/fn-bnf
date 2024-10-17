@@ -2,13 +2,13 @@
 members = ["proc-macro"]
 
 [package]
-name = "functional-ebnf"
+name = "fn-bnf"
 version = "0.1.0"
 edition = "2021"
 
 [features]
-new_range = []
+more_tuple_impls = []
+__internal_test_docs = []
 
 [dependencies]
-
-# fn-bnf-macro = { path = "./proc-macro" }
+fn-bnf-macro = { path = "./proc-macro" }
