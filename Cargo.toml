@@ -1,14 +1,20 @@
 [workspace]
-members = ["proc-macro"]
+members = ["proc"]
 
 [package]
 name = "fn-bnf"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
+authors = ["baltdev"]
+categories = ["parsing", "no-std"]
+keywords = ["parsing", "bnf", "no_std"]
+description = "A parsing grammar generator that lets you use arbitrary Rust items as rules."
+license = "MIT OR Apache 2.0"
 
 [features]
 more_tuple_impls = []
 __internal_test_docs = []
 
 [dependencies]
-fn-bnf-macro = { path = "./proc-macro" }
+fn-bnf-macro = { path = "./proc" }
+never-say-never = "6"

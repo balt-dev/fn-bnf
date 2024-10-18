@@ -1,30 +1,42 @@
 use core::ops::{Index, Range, RangeTo};
 
+#[allow(clippy::wildcard_imports)]
 use super::*;
 
+#[macro_export]
+/// Convenience macro for quickly defining errors with static messages for use in your grammars.
+/// 
+/// # Usage
+/// ```ignore
+/// err! {
+///     pub InvalidFloat: "floating point literals must have an integer part",
+///     pub(crate) InternalError: "internal error (this is a bug, please report)"
+/// }
+/// ```
 macro_rules! err {
-    ($($name: ident: $message: literal),*) => {$(
+    ($($vis: vis $name: ident: $message: literal),*$(,)?) => {$(
         #[derive(Debug)]
         #[doc = $message]
-        pub struct $name;
-        impl core::fmt::Display for $name {
-            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        $vis struct $name;
+        impl ::core::fmt::Display for $name {
+            fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
                 write!(f, $message)
             }
         }
-        impl Error for $name {}
+        impl ::core::error::Error for $name {}
     )*};
 }
 
 err! {
-    UnmatchedInput: "expected input to match function",
-    UnexpectedMatch: "matched input unexpectedly",
-    NoMatch: "could not match literal",
-    UnexpectedEOF: "unexpected end of input",
-    ExhaustedInput: "exhausted all parsing options"
+    pub UnmatchedInput: "expected input to match function",
+    pub UnexpectedMatch: "matched input unexpectedly",
+    pub UnexpectedEOF: "unexpected end of input",
+    pub ExhaustedInput: "no options matched for rule",
+    pub NoMatch: "could not match literal"
 }
 
-pub(crate) struct Map<
+/// Maps a function over the output of a rule. See [`Rule::map_parsed`].
+pub struct Map<
     'input, SliceType: ?Sized, 
     R: Rule<'input, SliceType>, O, 
     Func: Fn(R::Output) -> O
@@ -32,6 +44,9 @@ pub(crate) struct Map<
     pub(crate) inner: R,
     pub(crate) func: Func,
     pub(crate) _p: PhantomData<(&'input SliceType, O)>
+}
+impl<'i, S: ?Sized, R: Rule<'i, S>, O, F: Fn(R::Output) -> O> NamedRule for Map<'i, S, R, O, F> {
+    fn name(&self) -> Option<&'static str> { Some("Map") }
 }
 impl<
     'input, SliceType: ?Sized, 
@@ -49,7 +64,8 @@ impl<
 }
 
 
-pub(crate) struct TryMap<
+/// Attempts to map a function over the output of a rule. See [`Rule::try_map_parsed`].
+pub struct TryMap<
     'input, SliceType: ?Sized, 
     R: Rule<'input, SliceType>, O, E: Error + 'static,
     Func: Fn(R::Output) -> Result<O, E>
@@ -57,6 +73,9 @@ pub(crate) struct TryMap<
     pub(crate) inner: R,
     pub(crate) func: Func,
     pub(crate) _p: PhantomData<(&'input SliceType, O)>
+}
+impl<'i, S: ?Sized, R: Rule<'i, S>, O, E: Error + 'static, F: Fn(R::Output) -> Result<O, E>> NamedRule for TryMap<'i, S, R, O, E, F> {
+    fn name(&self) -> Option<&'static str> { Some("TryMap") }
 }
 impl<
     'input, SliceType: ?Sized, 
@@ -75,18 +94,18 @@ impl<
                 .map_err(|err| {
                     *index = start_index;
                     *input = start_input;
-                    ParseError::new(Some(Box::new(err)), R::NAME, start_index)
+                    ParseError::new(Some(Box::new(err)), self.inner.name(), start_index)
                 })
             )
     }
 }
 
 
-pub(crate) struct Not<R>(pub(crate) R);
+/// Errors if a rule matches.  See [`Rule::prevent`].
+pub struct Not<R>(pub(crate) R);
+impl<R> NamedRule for Not<R> {}
 
 impl<'input, T: ?Sized + 'input, R: Rule<'input, T>> Rule<'input, T> for Not<R> {
-    const NAME: Option<&'static str> = Some("Not");
-
     type Output = ();
 
     fn parse_at<'cursor, 'this, 'index>(&'this self, input: &'cursor mut &'input T, index: &'index mut usize) -> Result<Self::Output, ParseError> where 'input: 'this {
@@ -96,31 +115,38 @@ impl<'input, T: ?Sized + 'input, R: Rule<'input, T>> Rule<'input, T> for Not<R> 
         let Err(_) = res else {
             return Err(ParseError::new(
                 Some(Box::new(UnexpectedMatch)),
-                <Self as Rule<'input, T>>::NAME, start
+                self.name(), start
             ));
         };
         Ok(())
     }
 }
 
-pub(crate) struct Maybe<R>(pub R);
+/// Attempts to parse a rule, returning its result. See [`Rule::attempt`]
+pub struct Attempt<'input, T: 'input + ?Sized, R: Rule<'input, T>>(pub R, pub PhantomData<&'input T>);
+impl<'input, T: 'input + ?Sized, R: Rule<'input, T>> NamedRule for Attempt<'input, T, R> {
+    fn name(&self) -> Option<&'static str> { self.0.name() }
+}
 
-impl<'input, T: 'input + ?Sized, R: Rule<'input, T>> Rule<'input, T> for Maybe<R> {
-    type Output = Option<R::Output>;
+
+impl<'input, T: 'input + ?Sized, R: Rule<'input, T>> Rule<'input, T> for Attempt<'input, T, R> {
+    type Output = Result<R::Output, ParseError>;
     
     fn parse_at<'cursor, 'this, 'index>(&'this self, input: &'cursor mut &'input T, index: &'index mut usize) -> Result<Self::Output, ParseError> where 'input: 'this {
         // core::array::try_from_fn(|_| self.0.parse_at(input, index))
         let before = (*input, *index);
-        let res = self.0.parse_at(input, index).ok();
-        if res.is_none() { (*input, *index) = before; }
+        let res = self.0.parse_at(input, index);
+        if res.is_err() { (*input, *index) = before; }
         Ok(res)
     }
 }
 
-
-pub(crate) struct Consume<R>(pub R);
-
-impl<'input, R: Rule<'input, str>> Rule<'input, str> for Consume<R> {
+/// Matches a rule forever, failing if it does. See [`Rule::consume_all`].
+pub struct Consume<'input, T: 'input + ?Sized, R: Rule<'input, T>>(pub R, pub PhantomData<&'input T>);
+impl<'input, T: 'input + ?Sized, R: Rule<'input, T>> NamedRule for Consume<'input, T, R> {
+    fn name(&self) -> Option<&'static str> { self.0.name() }
+}
+impl<'input, R: Rule<'input, str>> Rule<'input, str> for Consume<'input, str, R> {
     type Output = Vec<R::Output>;
     
     fn parse_at<'cursor, 'this, 'index>(&'this self, input: &'cursor mut &'input str, index: &'index mut usize) -> Result<Self::Output, ParseError> where 'input: 'this {
@@ -137,7 +163,7 @@ impl<'input, R: Rule<'input, str>> Rule<'input, str> for Consume<R> {
         Ok(els)
     }
 }
-impl<'input, T: 'input, R: Rule<'input, [T]>> Rule<'input, [T]> for Consume<R> {
+impl<'input, T: 'input, R: Rule<'input, [T]>> Rule<'input, [T]> for Consume<'input, [T], R> {
     type Output = Vec<R::Output>;
     
     fn parse_at<'cursor, 'this, 'index>(&'this self, input: &'cursor mut &'input [T], index: &'index mut usize) -> Result<Self::Output, ParseError> where 'input: 'this {
@@ -155,17 +181,19 @@ impl<'input, T: 'input, R: Rule<'input, [T]>> Rule<'input, [T]> for Consume<R> {
     }
 }
 
-/// Repeatedly matches a rule a known amount of times.
-pub(crate) struct Repeat<R, const REPETITIONS: usize>(pub R);
-
-impl<'input, T: 'input + ?Sized, R: Rule<'input, T>, const REPETITIONS: usize> Rule<'input, T> for Repeat<R, REPETITIONS> {
+/// Repeatedly matches a rule a known amount of times. See [`Rule::repeat`].
+pub struct Repeat<'input, T: 'input + ?Sized, R: Rule<'input, T>, const REPETITIONS: usize>(pub R, pub PhantomData<&'input T>);
+impl<'input, const REPETITIONS: usize, T: 'input + ?Sized, R: Rule<'input, T>> NamedRule for Repeat<'input, T, R, REPETITIONS> {
+    fn name(&self) -> Option<&'static str> { self.0.name() }
+}
+impl<'input, T: 'input + ?Sized, R: Rule<'input, T>, const REPETITIONS: usize> Rule<'input, T> for Repeat<'input, T, R, REPETITIONS> {
     type Output = [R::Output; REPETITIONS];
     
     fn parse_at<'cursor, 'this, 'index>(&'this self, input: &'cursor mut &'input T, index: &'index mut usize) -> Result<Self::Output, ParseError> where 'input: 'this {
         // core::array::try_from_fn(|_| self.0.parse_at(input, index))
         let before = (*input, *index);
         let mut arr: [Option<R::Output>; REPETITIONS] = [const { None }; REPETITIONS];
-        for el in arr.iter_mut() {
+        for el in &mut arr {
             el.replace(match self.0.parse_at(input, index) {
                 Ok(v) => v,
                 Err(err) => {
@@ -178,25 +206,30 @@ impl<'input, T: 'input + ?Sized, R: Rule<'input, T>, const REPETITIONS: usize> R
     }
 }
 
-/// Matches a rule an arbitrary amount of times.
-pub(crate) struct Many<R> {
+/// Matches a rule an arbitrary amount of times. See [`Rule::take`].
+pub struct Many<'input, T: 'input + ?Sized, R: Rule<'input, T>> {
     rule: R,
-    limit: Option<usize>
+    limit: Option<usize>,
+    _p: PhantomData<&'input T>
 }
 
-impl<R> Many<R> {
+impl<'input, T: 'input + ?Sized, R: Rule<'input, T>> Many<'input, T, R> {
     /// Matches a potentially infinite amount of times
     pub fn unlimited(rule: R) -> Self {
-        Self { rule, limit: None }
+        Self { rule, limit: None, _p: PhantomData }
     }
 
     /// Matches at most a set amount of times.
     pub fn limited(rule: R, limit: usize) -> Self {
-        Self { rule, limit: Some(limit) }
+        Self { rule, limit: Some(limit), _p: PhantomData }
     }
 }
 
-impl<'input, T: 'input + ?Sized, R: Rule<'input, T>> Rule<'input, T> for Many<R> {
+impl<'input, T: 'input + ?Sized, R: Rule<'input, T>> NamedRule for Many<'input, T, R> {
+    fn name(&self) -> Option<&'static str> { self.rule.name() }
+}
+
+impl<'input, T: 'input + ?Sized, R: Rule<'input, T>> Rule<'input, T> for Many<'input, T, R> {
     type Output = Vec<R::Output>;
     
     fn parse_at<'cursor, 'this, 'index>(&'this self, input: &'cursor mut &'input T, index: &'index mut usize) -> Result<Self::Output, ParseError> where 'input: 'this {
@@ -216,9 +249,10 @@ impl<'input, T: 'input + ?Sized, R: Rule<'input, T>> Rule<'input, T> for Many<R>
 
 /// Matches one of any character or slice member. Fails on empty input.
 pub struct Any;
+impl NamedRule for Any {
+    fn name(&self) -> Option<&'static str> { Some("Any") }
+}
 impl<'input, T: 'input> Rule<'input, [T]> for Any {
-    const NAME: Option<&'static str> = Some("Any");
-
     type Output = &'input T;
 
     fn parse_at<'cursor, 'this, 'index>(&'this self, input: &'cursor mut &'input [T], index: &'index mut usize) -> Result<Self::Output, ParseError> where 'input: 'this {
@@ -229,37 +263,39 @@ impl<'input, T: 'input> Rule<'input, [T]> for Any {
                 *index += 1;
                 source
             })
-            .ok_or(ParseError::new(Some(Box::new(UnexpectedEOF)), <Self as Rule<'input, [T]>>::NAME, *index))
+            .ok_or(ParseError::new(Some(Box::new(UnexpectedEOF)), self.name(), *index))
     }
 }
 
 impl<'input> Rule<'input, str> for Any {
-    const NAME: Option<&'static str> = Some("Any");
-
     type Output = char;
 
     fn parse_at<'cursor, 'this, 'index>(&'this self, input: &'cursor mut &'input str, index: &'index mut usize) -> Result<Self::Output, ParseError> where 'input: 'this {
         input.chars().next()
-            .map(|chr| {
+            .inspect(|chr| {
                 let len = chr.len_utf8();
                 *input = &input[len..];
                 *index += len;
-                chr
             })
-            .ok_or(ParseError::new(Some(Box::new(UnexpectedEOF)), <Self as Rule<str>>::NAME, *index))
+            .ok_or(ParseError::new(Some(Box::new(UnexpectedEOF)), self.name(), *index))
     }
 }
 
+/// Takes input until the function fails.
 pub struct While<F, T> { func: F, _p: PhantomData<T> }
 
 impl<T, F: Fn(&T) -> bool> While<F, T> {
+    /// Creates a [`While`] rule from a function. 
     pub fn from(func: F) -> Self {
         Self { func, _p: PhantomData }
     }
 }
 
+impl<F, T> NamedRule for While<F, T> {
+    fn name(&self) -> Option<&'static str> { Some("While") }
+}
+
 impl<'input, F: Fn(&char) -> bool> Rule<'input, str> for While<F, char> {
-    const NAME: Option<&'static str> = Some("While");
     type Output = &'input str;
 
     fn parse_at<'cursor, 'this, 'index>(&'this self, input: &'cursor mut &'input str, index: &'index mut usize)
@@ -276,13 +312,12 @@ impl<'input, F: Fn(&char) -> bool> Rule<'input, str> for While<F, char> {
 }
 
 impl<'input, T: 'input, F: Fn(&T) -> bool> Rule<'input, [T]> for While<F, T> {
-    const NAME: Option<&'static str> = Some("While");
     type Output = &'input [T];
 
     fn parse_at<'cursor, 'this, 'index>(&'this self, input: &'cursor mut &'input [T], index: &'index mut usize)
         -> Result<Self::Output, ParseError> where 'input: 'this
     {
-        let offset = (*input).iter().position(|c: &T| !(self.func)(&c))
+        let offset = (*input).iter().position(|c: &T| !(self.func)(c))
             .unwrap_or(input.len());
 
         let res = &input[..offset];
@@ -292,15 +327,23 @@ impl<'input, T: 'input, F: Fn(&T) -> bool> Rule<'input, [T]> for While<F, T> {
     }
 }
 
+/// Struct returned by [`Rule::spanned`] to store the span and source of a given parsed rule.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Span<'input, T: 'input + ?Sized, O> {
+    /// The range of the input that the rule parsed over.
     pub span: Range<usize>,
+    /// The original input that the rule parsed.
     pub source: &'input T,
+    /// The output of the rule's parsing.
     pub output: O
 }
 
-pub(crate) struct Spanned<R> { pub(crate) rule: R }
-impl<'input, T: 'input + Index<RangeTo<usize>, Output = T> + ?Sized, R: Rule<'input, T>> Rule<'input, T> for Spanned<R> {
+/// Records the span of the inner rule. See [`Rule::spanned`].
+pub struct Spanned<'input, T: 'input + ?Sized, R: Rule<'input, T>> { pub(crate) rule: R, pub(crate) _p: PhantomData<&'input T> }
+impl<'input, T: 'input + ?Sized, R: Rule<'input, T>> NamedRule for Spanned<'input, T, R> {
+    fn name(&self) -> Option<&'static str> { self.rule.name() }
+}
+impl<'input, T: 'input + Index<RangeTo<usize>, Output = T> + ?Sized, R: Rule<'input, T>> Rule<'input, T> for Spanned<'input, T, R> {
     type Output = Span<'input, T, R::Output>;
     
     fn parse_at<'cursor, 'this, 'index>(&'this self, input: &'cursor mut &'input T, index: &'index mut usize) -> Result<Self::Output, ParseError> where 'input: 'this {
@@ -313,3 +356,39 @@ impl<'input, T: 'input + Index<RangeTo<usize>, Output = T> + ?Sized, R: Rule<'in
         })
     }
 }
+
+
+/// Always fails with a given error.
+pub struct Fail<E: core::error::Error + Clone + 'static>(pub E);
+
+impl<E: core::error::Error + Clone + 'static> NamedRule for Fail<E> {
+    fn name(&self) -> Option<&'static str> { Some("Fail") }
+}
+impl<'i, T: 'i, E: core::error::Error + Clone + 'static> Rule<'i, T> for Fail<E> {
+    type Output = never_say_never::Never; // if we don't do this, then we get some fuckiness when actually using it
+
+    fn parse_at<'cursor, 'this, 'index>(&'this self, _input: &'cursor mut &'_ T, index: &'index mut usize)
+        -> Result<Self::Output, ParseError> where 'i: 'this
+    {
+        Err(ParseError::new(Some(Box::new(self.0.clone())), self.name(), *index))
+    }
+}
+
+/// A canonical error for when a grammar simply finds something it doesn't expect.
+#[derive(Debug, Copy, Clone)]
+pub struct Unexpected<T: core::fmt::Debug> { val: T }
+impl<T: core::fmt::Debug> Unexpected<T> {
+    /// Creates a new instance of this type.
+    #[inline]
+    pub const fn new(val: T) -> Self {
+        Self { val }
+    }
+}
+
+impl<T: core::fmt::Debug> core::fmt::Display for Unexpected<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "unexpected token: {:?}", self.val)
+    }
+}
+
+impl<T: core::fmt::Debug> core::error::Error for Unexpected<T> {}

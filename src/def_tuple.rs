@@ -1,3 +1,4 @@
+#[allow(clippy::wildcard_imports)]
 use super::*;
 
 macro_rules! impl_tuple {
@@ -7,12 +8,15 @@ macro_rules! impl_tuple {
         )*
     ) => {$(
         #[doc(hidden)]
+        impl<$($idents),*> NamedRule for ($($idents,)*) {
+            fn name(&self) -> Option<&'static str> { Some("<anonymous group>") }
+        }
+
+        #[doc(hidden)]
         impl<
             'input, _S: ?Sized + 'input, _O,
-            $($idents: Rule<'input,  _S, Output = _O>),*
-        > Rule<'input, _S> for ($($idents,)*) {
-            const NAME: Option<&'static str> = Some("<anonymous group>");
-        
+            $($idents: Rule<'input,  _S, Output = _O> + 'input + Copy),*
+        > Rule<'input, _S> for ($($idents,)*) {        
             type Output = _O;
         
             fn parse_at<'cursor, 'this, 'index>(&'this self, input: &'cursor mut &'input _S, index: &'index mut usize) -> Result<_O, ParseError> where 'input: 'this {
@@ -23,7 +27,10 @@ macro_rules! impl_tuple {
                         ok => return ok
                     }
                 )*
-                Err(ParseError::new(Some(Box::new(ExhaustedInput)), Self::NAME, *index))
+
+                let exhausted: Box<dyn Error> = Box::new(ExhaustedInput);
+                
+                Err(ParseError::new(Some(exhausted), self.name(), *index))
             }
         }
     )*};
@@ -39,14 +46,15 @@ impl<
     'input, SliceType: ?Sized + 'input, Output,
     T
 > Rule<'input, SliceType> for (T, ) where T: Rule<'input, SliceType, Output = Output> {
-    const NAME: Option<&'static str> = Some("<anonymous group>");
-
     type Output = Output;
 
     #[inline]
     fn parse_at<'cursor, 'this, 'index>(&'this self, input: &'cursor mut &'input SliceType, index: &'index mut usize) -> Result<Output, ParseError> where 'input: 'this {
         self.0.parse_at(input, index)
     }
+}
+impl<T> NamedRule for (T, ) {
+    fn name(&self) -> Option<&'static str> { Some("<anonymous group>") }
 }
 
 impl_tuple! {
@@ -65,10 +73,10 @@ A: 0, B: 1, C: 2, D: 3, E: 4, F: 5, G: 6, H: 7, I: 8, J: 9, K: 10, L: 11, M: 12;
 A: 0, B: 1, C: 2, D: 3, E: 4, F: 5, G: 6, H: 7, I: 8, J: 9, K: 10, L: 11, M: 12, N: 13;
 A: 0, B: 1, C: 2, D: 3, E: 4, F: 5, G: 6, H: 7, I: 8, J: 9, K: 10, L: 11, M: 12, N: 13, O: 14;
 A: 0, B: 1, C: 2, D: 3, E: 4, F: 5, G: 6, H: 7, I: 8, J: 9, K: 10, L: 11, M: 12, N: 13, O: 14, P: 15;
-A: 0, B: 1, C: 2, D: 3, E: 4, F: 5, G: 6, H: 7, I: 8, J: 9, K: 10, L: 11, M: 12, N: 13, O: 14, P: 15, Q: 16;
 }
 #[cfg(feature = "more_tuple_impls")]
 impl_tuple!{
+A: 0, B: 1, C: 2, D: 3, E: 4, F: 5, G: 6, H: 7, I: 8, J: 9, K: 10, L: 11, M: 12, N: 13, O: 14, P: 15, Q: 16;
 A: 0, B: 1, C: 2, D: 3, E: 4, F: 5, G: 6, H: 7, I: 8, J: 9, K: 10, L: 11, M: 12, N: 13, O: 14, P: 15, Q: 16, R: 17;
 A: 0, B: 1, C: 2, D: 3, E: 4, F: 5, G: 6, H: 7, I: 8, J: 9, K: 10, L: 11, M: 12, N: 13, O: 14, P: 15, Q: 16, R: 17, S: 18;
 A: 0, B: 1, C: 2, D: 3, E: 4, F: 5, G: 6, H: 7, I: 8, J: 9, K: 10, L: 11, M: 12, N: 13, O: 14, P: 15, Q: 16, R: 17, S: 18, T: 19;
