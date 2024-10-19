@@ -6,13 +6,28 @@ use proc_macro2::Span;
 use proc_macro::TokenStream;
 use quote::{quote, TokenStreamExt};
 use syn::{
-    ext::IdentExt, parse::{Parse, ParseStream}, parse_macro_input, punctuated::Punctuated, spanned::Spanned, Attribute, Expr, GenericParam, Generics, Ident, Lifetime, LifetimeParam, Stmt, Token, Type, TypeInfer, Visibility
+    ext::IdentExt, parse::{Parse, ParseStream}, parse_macro_input, punctuated::Punctuated, spanned::Spanned, Attribute, Expr, GenericParam, Generics, Ident, Lifetime, LifetimeParam, Stmt, Type, TypeInfer, Visibility
 };
 use itertools::Itertools;
 
 mod kw {
     syn::custom_keyword!(grammar);
     syn::custom_keyword!(from);
+    syn::custom_keyword!(try_from);
+}
+
+fn cr8_name() -> syn::Path {
+    use proc_macro_crate::{crate_name, FoundCrate};
+    let found_crate = crate_name("fn-bnf").expect("fn-bnf should be present in `Cargo.toml`");
+
+    match found_crate {
+        FoundCrate::Itself => syn::parse_quote!( ::fn_bnf ),
+        FoundCrate::Name(name) => syn::Path {
+            leading_colon: Some(syn::token::PathSep::default()),
+            segments: [syn::PathSegment { ident: Ident::new(&name, Span::call_site()), arguments: syn::PathArguments::None }]
+                .into_iter().collect()
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -30,37 +45,44 @@ impl Parse for Grammar {
         let vis: Visibility = input.parse()?;
         input.parse::<kw::grammar>()?;
         let ident: Ident = input.parse()?;
-        input.parse::<Token![<]>()?;
+        input.parse::<syn::Token![<]>()?;
         let ty: Type = input.parse()?;
-        input.parse::<Token![>]>()?;
+        input.parse::<syn::Token![>]>()?;
         let body;
         syn::braced!(body in input);
         let mut rules = IndexMap::new();
 
         while !body.is_empty() {
+            let attrs = body.call(syn::Attribute::parse_outer)?;
+            let vis: syn::Visibility = body.parse()?;
             let name = body.call(Ident::parse_any)?;
             let generics = Generics::parse(&body)?;
             let mut fields = Fields::Unit;
             if body.peek(syn::token::Brace) {
                 fields = Fields::Structured(body.parse()?);
             }
-            body.parse::<Token![:]>()?;
+            body.parse::<syn::Token![->]>()?;
             let ty = body.parse::<Type>()?;
-            let mut func = None;
+            let mut func = MapFunc::Empty;
             if body.peek(kw::from) {
                 body.parse::<kw::from>()?;
                 let parens;
                 syn::parenthesized!(parens in body);
-                func = Some(parens.parse::<syn::Expr>()?);
+                func = MapFunc::From(parens.parse::<syn::Expr>()?);
+            } else if body.peek(kw::try_from) {
+                body.parse::<kw::try_from>()?;
+                let parens;
+                syn::parenthesized!(parens in body);
+                func = MapFunc::TryFrom(parens.parse::<syn::Expr>()?);
             }
             let mut where_clause = None;
-            if body.peek(Token![where]) {
+            if body.peek(syn::Token![where]) {
                 where_clause = Some(body.parse::<syn::WhereClause>()?);
             }
-            body.parse::<Token![=]>()?;
+            body.parse::<syn::Token![=]>()?;
             let definition = body.parse::<RuleGroup>()?;
-            let end = body.parse::<Token![;]>()?;
-            let mut span = name.span();
+            let end = body.parse::<syn::Token![;]>()?;
+            let mut span = vis.span();
             if let Some(joined) = span.join(end.span) {
                 span = joined;
             }
@@ -68,7 +90,7 @@ impl Parse for Grammar {
             if let Some(
                 RuleBody { span: dupe_span, .. }
             ) = rules.insert(name,
-                RuleBody { generics, fields, ty, func, where_clause, span, group: definition }
+                RuleBody { vis, attrs, generics, fields, ty, func, where_clause, span, group: definition }
             ) {
                 Diagnostic::spanned(span, Level::Error, "cannot have duplicate rules".into())
                     .span_note(dupe_span, "first definition of rule here".into())
@@ -88,12 +110,12 @@ impl Parse for Grammar {
 
 #[derive(Debug, Clone)]
 struct RuleGroup {
-    options: Punctuated<RulePath, Token![:]>,
+    options: Punctuated<RulePath, syn::Token![:]>,
 }
 
 impl Parse for RuleGroup {
     fn parse(input: ParseStream) -> syn::Result<Self> {
-        Punctuated::<RulePath, Token![:]>::parse_separated_nonempty(input).map(|options| Self { 
+        Punctuated::<RulePath, syn::Token![:]>::parse_separated_nonempty(input).map(|options| Self { 
             options 
         })
     }
@@ -116,11 +138,20 @@ impl quote::ToTokens for Fields {
 }
 
 #[derive(Debug, Clone)]
+enum MapFunc {
+    Empty,
+    From(Expr),
+    TryFrom(Expr)
+}
+
+#[derive(Debug, Clone)]
 struct RuleBody {
+    vis: syn::Visibility,
+    attrs: Vec<syn::Attribute>,
     generics: Generics,
     fields: Fields,
     ty: Type,
-    func: Option<Expr>,
+    func: MapFunc,
     where_clause: Option<syn::WhereClause>,
     span: Span,
     group: RuleGroup,
@@ -134,8 +165,8 @@ struct ElementTy {
 
 impl Parse for ElementTy {
     fn parse(input: ParseStream) -> syn::Result<Self> {
-        let silent = input.peek(Token![_]);
-        if silent { input.parse::<Token![_]>()?; }
+        let silent = input.peek(syn::Token![_]);
+        if silent { input.parse::<syn::Token![_]>()?; }
         input.parse().map(|inner| Self { silent, inner })
     }
 }
@@ -148,13 +179,13 @@ impl quote::ToTokens for ElementTy {
 
 #[derive(Debug, Clone)]
 struct RulePath {
-    elements: Punctuated<ElementTy, Token![,]>,
+    elements: Punctuated<ElementTy, syn::Token![,]>,
 }
 
 impl Parse for RulePath {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         Ok(Self {
-            elements: Punctuated::<ElementTy, Token![,]>::parse_separated_nonempty(input)?
+            elements: Punctuated::<ElementTy, syn::Token![,]>::parse_separated_nonempty(input)?
         })
     }
 }
@@ -162,7 +193,9 @@ impl Parse for RulePath {
 impl RuleBody {
     #[allow(clippy::too_many_lines)]
     fn tokenize(self, name: &Ident, rule_ty: &Type) -> Vec<Stmt> {
-        let Self { mut generics, fields, ty, func, where_clause, span, group } = self;
+        let cr8 = cr8_name();
+
+        let Self { vis, attrs, mut generics, fields, ty, func, where_clause, span, group } = self;
         let infer = Type::Infer(TypeInfer { underscore_token: Default::default() });
 
         let tys = match &ty {
@@ -173,9 +206,14 @@ impl RuleBody {
 
         let mut impl_generics = generics.clone();
         let rule_generics = impl_generics.clone();
-        impl_generics.params.push(GenericParam::Lifetime(
-            LifetimeParam::new(Lifetime::new("'input", name.span()))
-        ));
+        if !impl_generics.params.iter().filter_map(|param| {
+            let GenericParam::Lifetime(p) = param else { return None; };
+            Some(&p.lifetime)
+        }).any(|lt| lt.ident == "input") {
+            impl_generics.params.push(GenericParam::Lifetime(
+                LifetimeParam::new(Lifetime::new("'input", name.span()))
+            ));
+        }
         for param in &mut generics.params {
             match param {
                 GenericParam::Lifetime(lt) => {
@@ -225,22 +263,25 @@ impl RuleBody {
             let at_end = i + 1 >= group.options.len();
             let mut next_args = Vec::<Stmt>::new();
 
-            let return_expr: Expr = if let Some(func) = &func {
-                syn::parse_quote_spanned!(
-                    span=> 
-                    (#func)(#(#variable_names),*)
-                        .map_err(|err| {
-                            (*input, *index) = __before;
-                            ::fn_bnf::ParseError::new(
-                                Some(::fn_bnf::Box::new(err)),
-                                rule.name(),
-                                *index
-                            )
-                        }
-                    )
-                )
-            } else {
-                syn::parse_quote_spanned!(span=> Ok((#(#variable_names),*)))
+            let return_expr: Expr = match &func {
+                MapFunc::Empty =>
+                    syn::parse_quote_spanned!(span=> Ok((#(#variable_names),*))),
+                MapFunc::From(func) =>
+                    syn::parse_quote_spanned!(span=> Ok((#func)(#(#variable_names),*))),
+                MapFunc::TryFrom(func) => 
+                    syn::parse_quote_spanned!(
+                        span=> 
+                        (#func)(#(#variable_names),*)
+                            .map_err(|err| {
+                                (*input, *index) = __before;
+                                #cr8::ParseError::new(
+                                    Some(#cr8::Box::new(err)),
+                                    rule.name(),
+                                    *index
+                                )
+                            }
+                        )
+                    )                
             };
             let mut tys = tys.clone();
             let mut iter = option.elements.iter();
@@ -259,8 +300,8 @@ impl RuleBody {
             let fail_condition: Stmt = if at_end {
                 syn::parse_quote_spanned!(span=> {
                     (*input, *index) = __before;
-                    return Err(::fn_bnf::ParseError::new(
-                        Some(::fn_bnf::Box::new(err)),
+                    return Err(#cr8::ParseError::new(
+                        Some(#cr8::Box::new(err)),
                         rule.name().or(self.name()),
                         *index
                     ))
@@ -278,10 +319,12 @@ impl RuleBody {
                 if first.silent {
                     syn::parse_quote_spanned!(first.span()=> ;)
                 } else {
-                    let Some(first_ty) = func.as_ref().map_or_else(|| tys.next(), |_| Some(&infer)) else {
-                        Diagnostic::spanned(ty.span(), Level::Error, "returned type count does not match options".into())
-                            .abort()
-                    };
+                    let first_ty = if let MapFunc::Empty = func {
+                        tys.next().unwrap_or_else(||
+                            Diagnostic::spanned(ty.span(), Level::Error, "returned type count does not match options".into())
+                                .abort()
+                        )
+                    } else { &infer };
                     if min_options == 0 {
                         syn::parse_quote_spanned!(first.span()=> let arg_0: #first_ty = Some(first);)
                     } else {
@@ -292,23 +335,25 @@ impl RuleBody {
 
             let take_count = min_options.saturating_sub(usize::from(!first.silent));
             for el in (&mut iter).take(take_count) {
+                let opt_ty = if let MapFunc::Empty = func {
+                    tys.next().unwrap_or_else(||
+                        Diagnostic::spanned(ty.span(), Level::Error, "returned type count does not match options".into())
+                            .abort()
+                    )
+                } else { &infer };
                 if el.silent {
                     next_args.extend::<Vec<Stmt>>(syn::parse_quote_spanned!(el.span()=>
                         let rule = { #el };
-                        if let Err(err) = ::fn_bnf::Rule::<'input, #rule_ty>::parse_at(&rule, input, index) {
+                        if let Err(err) = #cr8::Rule::<'input, #rule_ty>::parse_at(&rule, input, index) {
                             #fail_condition
                         };
                     ));
                     continue;
                 }
                 let Some(name) = names.next() else { break };
-                let Some(opt_ty) = func.as_ref().map_or_else(|| tys.next(), |_| Some(&infer)) else {
-                    Diagnostic::spanned(ty.span(), Level::Error, "returned type count does not match options".into())
-                        .abort()
-                };
                 next_args.extend::<Vec<Stmt>>(syn::parse_quote_spanned!(el.span()=>
                     let rule = { #el };
-                    let #name: #opt_ty = match ::fn_bnf::Rule::<'input, #rule_ty>::parse_at(&rule, input, index) {
+                    let #name: #opt_ty = match #cr8::Rule::<'input, #rule_ty>::parse_at(&rule, input, index) {
                         Ok(val) => val,
                         Err(err) => #fail_condition
                     };
@@ -318,7 +363,7 @@ impl RuleBody {
                 if el.silent {
                     next_args.extend::<Vec<Stmt>>(syn::parse_quote_spanned!(el.span()=>
                         let rule = { #el };
-                        if let Err(err) = ::fn_bnf::Rule::<'input, #rule_ty>::parse_at(&rule, input, index) {
+                        if let Err(err) = #cr8::Rule::<'input, #rule_ty>::parse_at(&rule, input, index) {
                             #fail_condition
                         };
                     ));
@@ -327,7 +372,7 @@ impl RuleBody {
                 let Some(name) = names.next() else { break };
                 next_args.extend::<Vec<Stmt>>(syn::parse_quote_spanned!(el.span()=>
                     let rule = { #el };
-                    let #name = match ::fn_bnf::Rule::<'input, #rule_ty>::parse_at(&rule, input, index) {
+                    let #name = match #cr8::Rule::<'input, #rule_ty>::parse_at(&rule, input, index) {
                         Ok(val) => Some(val),
                         Err(err) => #fail_condition
                     };
@@ -336,7 +381,7 @@ impl RuleBody {
             
             element_defs.extend::<Vec<Stmt>>(syn::parse_quote_spanned!(first.span()=> 'b: {
                 let rule = { #first };
-                match ::fn_bnf::Rule::<'input, #rule_ty>::parse_at(&rule, input, index) {
+                match #cr8::Rule::<'input, #rule_ty>::parse_at(&rule, input, index) {
                     Ok(first) => {
                         #(#maybe_arg0)*
                         #(#next_args)*
@@ -349,39 +394,101 @@ impl RuleBody {
             }));
         }
 
-        let predicates = where_clause.as_ref().map(|v| v.predicates.clone());
-
         syn::parse_quote_spanned!(self.span=>
-            #[allow(non_camel_case_types)]
-            #[doc(hidden)]
-            pub(super) struct #name #rule_generics #where_clause #fields
+            #(#attrs)*
+            #vis struct #name #rule_generics #where_clause #fields
 
-            impl #rule_generics ::fn_bnf::NamedRule for #name #generics #where_clause {
+            impl #rule_generics #cr8::NamedRule for #name #generics #where_clause {
                 fn name(&self) -> Option<&'static str> { Some(stringify!(#name)) }
             }
 
-            impl #impl_generics ::fn_bnf::Rule<'input, #rule_ty> for #name #generics 
-                where #rule_ty: 'input, #predicates
-            {
+            impl #impl_generics #cr8::Rule<'input, #rule_ty> for #name #generics #where_clause {
                 type Output = #ty;
 
                 #[allow(unused_variables, unreachable_code, unused_labels, unused_parens)]
                 fn parse_at<'cursor, 'this, 'index>(&'this self, input: &'cursor mut &'input #rule_ty, index: &'index mut usize)
-                    -> Result<Self::Output, ::fn_bnf::ParseError>
+                    -> Result<Self::Output, #cr8::ParseError>
                     where 'input : 'this
                 {
                     #[allow(unused)]
-                    type AnyRule<'input, Out> = &'input dyn ::fn_bnf::Rule<'input, #rule_ty, Output = Out>;
                     let __before = (*input, *index);
                     #(#optional_variable_defs)*
 
                     #(#element_defs)*
 
-                    Err(::fn_bnf::ParseError::new(Some(::fn_bnf::Box::new(::fn_bnf::ExhaustedInput)), self.name(), *index))
+                    Err(#cr8::ParseError::new(Some(#cr8::Box::new(#cr8::errors::ExhaustedInput)), self.name(), *index))
                 }
             }
         )
     }
+}
+
+#[proc_macro_derive(NamedRule)]
+pub fn derive_named(input: TokenStream) -> TokenStream {
+    use syn::Data;
+
+    let cr8 = cr8_name();
+
+    let input = parse_macro_input!(input as syn::DeriveInput);
+
+    let name = input.ident;
+    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+    let expanded = match &input.data {
+        Data::Struct(_) | Data::Union(_) => quote! {
+            #[automatically_derived]
+            impl #impl_generics #cr8::NamedRule for #name #ty_generics #where_clause {
+                #[inline]
+                fn name(&self) -> Option<&'static str> {
+                    Some(stringify!(#name))
+                }
+            }
+        },
+        Data::Enum(data_enum) => {
+            let variants = &data_enum.variants;
+            let variant_pats = variants.iter().map(|variant| -> syn::Pat {
+                let name = &variant.ident;
+                match variant.fields {
+                    syn::Fields::Unit => 
+                        syn::Pat::Path(syn::parse_quote!(Self::#name)),
+                    syn::Fields::Named(_) => 
+                        syn::Pat::Struct(syn::PatStruct {
+                            attrs: vec![],
+                            qself: None,
+                            path: syn::parse_quote!(Self::#name),
+                            brace_token: Default::default(),
+                            fields: Punctuated::new(),
+                            rest: Some(syn::PatRest { attrs: vec![], dot2_token: Default::default(), })
+                        }),
+                    syn::Fields::Unnamed(_) => 
+                        syn::Pat::TupleStruct(syn::PatTupleStruct {
+                            attrs: vec![],
+                            qself: None,
+                            path: syn::parse_quote!(Self::#name),
+                            paren_token: Default::default(),
+                            elems: [syn::Pat::Rest(syn::PatRest { attrs: vec![], dot2_token: Default::default(), })]
+                                    .into_iter().collect()
+                        })
+
+                }
+            });
+            let field_names = variants.iter()
+                .map(|variant| format!("{name}::{}", variant.ident));
+            
+            quote! {
+                #[automatically_derived]
+                impl #impl_generics #cr8::NamedRule for #name #ty_generics #where_clause  {
+                    #[inline]
+                    fn name(&self) -> Option<&'static str> {
+                        Some(match &self {
+                            #(#variant_pats => #field_names),*
+                        })
+                    }
+                }
+            }
+        }
+    };
+
+    TokenStream::from(expanded)
 }
 
 #[proc_macro]
@@ -390,22 +497,19 @@ pub fn define(input: TokenStream) -> TokenStream {
     let Grammar {
         attrs, vis, ident, ty, rules, ..
     } = parse_macro_input!(input as Grammar);
+    let cr8 = cr8_name();
 
-    let mod_name = Ident::new(&format!("__{ident}"), ident.span());
-
-    // .collect_vec() because quote dum
     let rules = rules.iter().map(|(name, body)| body.clone().tokenize(name, &ty));
 
     quote!(
         #( #attrs )*
-        #[allow(non_snake_case, unsafe_code)]
-        mod #mod_name {
-            #[allow(unused_imports)]
+        #[allow(non_snake_case)]
+        #vis mod #ident {
+            #![allow(unused_imports)]
+            #![allow(clippy::double_parens)]
             use super::*;
-            use ::fn_bnf::NamedRule as _;
+            use #cr8::NamedRule as _;
             #(#(#rules)*)*
         }
-
-        #vis use #mod_name as #ident;
     ).into()
 }

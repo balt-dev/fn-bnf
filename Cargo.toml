@@ -10,11 +10,17 @@ categories = ["parsing", "no-std"]
 keywords = ["parsing", "bnf", "no_std"]
 description = "A parsing grammar generator that lets you use arbitrary Rust items as rules."
 license = "MIT OR Apache 2.0"
+rust-version = "1.81.0"
+repository = "https://github.com/balt-dev/fn-bnf"
+documentation = "https://docs.rs/fn-bnf"
 
 [features]
 more_tuple_impls = []
 __internal_test_docs = []
+error_in_core = []
 
 [dependencies]
 fn-bnf-macro = { path = "./proc" }
-never-say-never = "6"
+
+[package.metadata.docs.rs]
+cargo-args = ["-Zunstable-options", "-Zrustdoc-scrape-examples"]

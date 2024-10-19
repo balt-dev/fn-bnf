@@ -2,13 +2,13 @@
 use super::*;
 
 #[allow(clippy::needless_lifetimes)] // used in proc macro
-impl<'input, T, S: ?Sized> NamedRule for for<'index, 'cursor> fn(&'cursor mut &'input S, &'index mut usize) -> Result<T, ParseError> {
+impl<'ty, T, S: ?Sized> NamedRule for for<'index, 'cursor> fn(&'cursor mut &'ty S, &'index mut usize) -> Result<T, ParseError> {
     fn name(&self) -> Option<&'static str> { Some("<anonymous rule>") }
 }
-impl<'input, T, S: ?Sized> Rule<'input, S> for for<'index, 'cursor> fn(&'cursor mut &'input S, &'index mut usize) -> Result<T, ParseError> {
+impl<'ty, T, S: ?Sized> Rule<'ty, S> for for<'index, 'cursor> fn(&'cursor mut &'ty S, &'index mut usize) -> Result<T, ParseError> {
     type Output = T;
 
-    fn parse_at<'cursor, 'this, 'index>(&'this self, input: &'cursor mut &'input S, index: &'index mut usize) -> Result<T, ParseError> where 'input: 'this {
+    fn parse_at<'cursor, 'this, 'index>(&'this self, input: &'cursor mut &'ty S, index: &'index mut usize) -> Result<T, ParseError> where 'ty: 'this {
         let before = (*input, *index);
         self(input, index).map_err(|err| {
             (*input, *index) = before;
@@ -20,7 +20,6 @@ impl<T> NamedRule for for<'a> fn(&'a T) -> bool {
     fn name(&self) -> Option<&'static str> { Some("<anonymous pattern>") }
 }
 
-/// SAFETY: We only advance if the pattern matches.
 impl<'input, T: 'input> Rule<'input, [T]> for for<'a> fn(&'a T) -> bool {
     type Output = &'input T;
 
@@ -48,18 +47,22 @@ impl<'input> Rule<'input, str> for fn(&char) -> bool {
 }
 
 impl NamedRule for char {
-    fn name(&self) -> Option<&'static str> { Some("<single character literal>") }
+    fn name(&self) -> Option<&'static str> { Some("<single character>") }
 }
 impl<'input> Rule<'input, str> for char {
     type Output = char;
 
     fn parse_at<'cursor, 'this, 'index>(&'this self, input: &'cursor mut &'input str, index: &'index mut usize) -> Result<Self::Output, ParseError> where 'input: 'this {
-        if let Some((chr, idx)) = input.chars().next().and_then(|chr| (*self == chr).then_some((chr, chr.len_utf8()))) {
-            *input = &input[idx..];
-            *index += idx;
-            return Ok(chr);
+        let Some(chr) = input.chars().next() else {
+            return Err(ParseError::new(Some(Box::new(UnexpectedEOF)), self.name(), *index))
+        };
+        if chr != *self {
+            return Err(ParseError::new(Some(Box::new(Unexpected::<char>::new(chr))), self.name(), *index))    
         }
-        Err(ParseError::new(Some(Box::new(UnmatchedInput)), self.name(), *index))
+        let len = chr.len_utf8();
+        *index += len;
+        *input = &input[len..];
+        Ok(*self)
     }
 }
 
@@ -107,10 +110,9 @@ impl<'input> Rule<'input, str> for str {
     }
 }
 
-impl<T: ?Sized + NamedRule> NamedRule for &T {
-    fn name(&self) -> Option<&'static str> { (*self).name() }
+impl<T: NamedRule + ?Sized> NamedRule for &T {
+    #[inline] fn name(&self) -> Option<&'static str> { (*self).name() }
 }
-
 impl<'input, S: ?Sized + 'input, T: ?Sized + Rule<'input,  S>> Rule<'input, S> for &T {
     type Output = <T as Rule<'input, S>>::Output;
 

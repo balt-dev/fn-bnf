@@ -1,97 +1,76 @@
+use std::{str::FromStr, io::Write};
 
-use std::{
-    convert::Infallible,
-    str::FromStr,
-    io::Write,
-};
-
-use fn_bnf::{define, Any, Rule, While};
+use fn_bnf::{define, Any, Rule, While, Fail, errors::Unexpected};
 
 #[derive(Debug, PartialEq, Copy, Clone)]
-enum Token {
+pub enum Token {
     Number(f64),
-    Plus, Minus, Asterisk, Slash, Carat, Percent,
+    Plus, Minus, Asterisk, Slash, Carat, Percent, Ans,
     LeftParen, RightParen
 }
-impl core::fmt::Display for Token {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{self:?}")
-    }
-}
-
-#[derive(Debug)]
-struct InvalidToken(Token);
-impl core::fmt::Display for InvalidToken {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "unexpected token: {}", self.0)
-    }
-}
-
-impl core::error::Error for InvalidToken {}
-
-#[derive(Debug)]
-struct InvalidCharacter(char);
-impl core::fmt::Display for InvalidCharacter {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "unexpected character: {}", self.0)
-    }
-}
-impl core::error::Error for InvalidCharacter {}
 
 define! {
     grammar MathTokens<str> {
         // Mapping the individual parses to () makes .hoard() create a Vec<()>, which doesn't allocate
-        ws_token: () = _ (' ', '\n', '\t');
-        whitespace: () = _ ws_token, _ ws_token.hoard();
+        WhitespaceToken -> () = _ (' ', '\n', '\t');
+        Whitespace -> () = _ WhitespaceToken, _ WhitespaceToken.hoard();
 
-        tokens: Vec<Token> = token.consume_all().map_parsed(|v| v.into_iter().filter_map(|v| v).collect());
-        token: Option<Token> = 
-            num : plus : minus : asterisk : slash : percent : carat
-            : lparen : rparen : _ whitespace 
-            : _ Rule::<str>::try_map_parsed(Any, |c| Err::<Infallible, _>(InvalidCharacter(c)));
+        pub LangTokens -> Vec<Token> = LangToken.consume_all()
+            .map_parsed(|v| v.into_iter().filter_map(|v| v).collect() );
+        LangToken -> Option<Token> = 
+            Num : Plus : Minus : Asterisk : Slash : Percent : Carat
+            : LParen : RParen : Ans : _ Whitespace 
+            : InvalidChar;
+        // Since Fail returns !, we can coerce from that to a token
+        InvalidChar -> Token from(|_, n| n) = Any, Fail::new(Unexpected::new(arg_0));
 
-        plus: Token = '+'.map_parsed(|_| Token::Plus);
-        minus: Token = '-'.map_parsed(|_| Token::Minus);
-        asterisk: Token = '*'.map_parsed(|_| Token::Asterisk);
-        slash: Token = '/'.map_parsed(|_| Token::Slash);
-        percent: Token = '%'.map_parsed(|_| Token::Percent);
-        carat: Token = '^'.map_parsed(|_| Token::Carat);
-        lparen: Token = '('.map_parsed(|_| Token::LeftParen);
-        rparen: Token = ')'.map_parsed(|_| Token::RightParen);
+        Plus -> Token = '+'.map_parsed(|_| Token::Plus);
+        Minus -> Token = '-'.map_parsed(|_| Token::Minus);
+        Asterisk -> Token = '*'.map_parsed(|_| Token::Asterisk);
+        Slash -> Token = '/'.map_parsed(|_| Token::Slash);
+        Percent -> Token = '%'.map_parsed(|_| Token::Percent);
+        Carat -> Token = '^'.map_parsed(|_| Token::Carat);
+        LParen -> Token = '('.map_parsed(|_| Token::LeftParen);
+        RParen -> Token = ')'.map_parsed(|_| Token::RightParen);
 
-        num: Token from(|n| Ok::<_, Infallible>(Token::Number(n))) 
-            = "nan".map_parsed(|_| f64::NAN) : "inf".map_parsed(|_| f64::INFINITY) : float;
-        float: f64 from(f64::from_str) = float_tokens.spanned().map_parsed(|span| span.source);
+        Ans -> Token = "ans".map_parsed(|_| Token::Ans);
+
+        Num -> Token from(|n| Token::Number(n)) = 
+            ("nan", "NaN").map_parsed(|_| f64::NAN) : 
+            ("inf", "Infinity").map_parsed(|_| f64::INFINITY) : 
+            Float;
+        Float -> f64 try_from(f64::from_str) = FloatTokens.spanned().map_parsed(|span| span.source);
         
-        float_tokens: () = _ uint, _ float_fract.attempt(), _ float_exp.attempt();
-        float_fract: () = _ '.', _ uint;
-        float_exp: () = _ ('e', 'E'), _ ('-', '+').attempt(), _ uint;
+        FloatTokens -> () = _ UInt, _ FloatFract.attempt(), _ FloatExp.attempt();
+        FloatFract -> () = _ '.', _ UInt;
+        FloatExp -> () = _ ('e', 'E'), _ ('-', '+').attempt(), _ UInt;
 
-        uint: &'input str = While::from(char::is_ascii_digit);
+        UInt -> &'input str = While::from(char::is_ascii_digit);
     }
 }
 
 define! {
     grammar TokenMath<[Token]> {
-        EOF: () = Rule::<'input, [Token]>::prevent(Any);
-        expr: f64 from(parse_expr) = prod, sum_suf.consume_all();
-        sum: f64 from(parse_expr) = prod, sum_suf.hoard();
-        sum_suf: (&'input [Token], f64) = ([Token::Plus], [Token::Minus]), prod;
-        prod: f64 from(parse_expr) = exp, prod_suf.hoard();
-        prod_suf: (&'input [Token], f64) = ([Token::Asterisk], [Token::Slash], [Token::Percent]), exp;
-        exp: f64 from(parse_expr) = neg, exp_suf.hoard();
-        exp_suf: (&'input [Token], f64) = [Token::Carat], neg;
-        neg: f64 from(|negative, num: f64| Ok::<_, Infallible>(if negative {-num} else {num})) 
-            = [Token::Minus].attempt().map_parsed(|opt| opt.is_ok()), atom;
-        atom: f64 = _ [Token::LeftParen], sum, _ [Token::RightParen] : number;
-        number: f64 = Rule::<'input, [Token]>::try_map_parsed(Any, |token| {
-            let Token::Number(n) = token else { return Err(InvalidToken(*token)); };
+        pub Expr -> f64 from(parse_expr) = Prod, SumSuf.consume_all();
+
+        EOF -> () = Rule::<'input, [Token]>::prevent(Any);
+        Sum -> f64 from(parse_expr) = Prod, SumSuf.hoard();
+        SumSuf -> (&'input [Token], f64) = ([Token::Plus], [Token::Minus]), Prod;
+        Prod -> f64 from(parse_expr) = Exp, ProdSuf.hoard();
+        ProdSuf -> (&'input [Token], f64) = ([Token::Asterisk], [Token::Slash], [Token::Percent]), Exp;
+        Exp -> f64 from(parse_expr) = Neg, ExpSuf.hoard();
+        ExpSuf -> (&'input [Token], f64) = [Token::Carat], Neg;
+        Neg -> f64 from(|negative, num: f64| if negative {-num} else {num}) 
+            = [Token::Minus].attempt().map_parsed(|opt| opt.is_ok()), Atom;
+        Atom -> f64 = _ [Token::LeftParen], Sum, _ [Token::RightParen] : Number;
+        Number -> f64 try_from(|token: &Token| {
+            let Token::Number(n) = token else { return Err(Unexpected::<Token>::new(*token)); };
             Ok(*n)
-        });
+        }) = Any;
     }
 }
 
-fn parse_expr(mut lhs: f64, suffixes: Vec<(&[Token], f64)>) -> Result<f64, Infallible> {
+fn parse_expr(mut lhs: f64, suffixes: Vec<(&[Token], f64)>) -> f64 {
     for (op, rhs) in suffixes {
         match op[0] {
             Token::Plus => lhs += rhs,
@@ -103,33 +82,49 @@ fn parse_expr(mut lhs: f64, suffixes: Vec<(&[Token], f64)>) -> Result<f64, Infal
             _ => unreachable!()
         }
     }
-    Ok(lhs)
+    lhs
 }
 
 
 fn main() -> Result<(), std::io::Error> {
     let mut lines = std::io::stdin().lines();
-    println!("Input a math expression below, or nothing to exit:");
-    loop {
+    println!("Input a math expression below, `clear` to clear the console, or `exit` / `quit` to exit.");
+    println!("You can access the result of the last expression with `ans`.");
+    let mut last_ans = None;
+    'outer: loop {
         print!("[?] ");
         std::io::stdout().flush()?;
-        let Some(input) = lines.next() else { break Ok(()) };
-        let input = input?;
-        if input.is_empty() { break Ok(()); }
-        let (_, tokens) = match MathTokens::tokens.parse(&input) {
-            Ok(v) => v,
-            Err(err) => {
-                println!("[!] Failed to parse: {err}");
-                continue;
-            }
-        };
-        let (_, result) = match TokenMath::expr.parse(tokens.as_ref()) {
-            Ok(v) => v,
-            Err(err) => {
-                println!("[!] Failed to parse: {err}");
-                continue;
-            }
-        };
-        println!("[=] {result}")
+        let Some(input) = lines.next().transpose()? else { break Ok(()) };
+        let input = input.trim_ascii();
+        if input.is_empty() { print!("\x1b[1A"); continue; }
+        match input {
+            "clear" => print!("\x1bc"),
+            "exit" | "quit" => break Ok(()),
+            _ => {
+                let (_, mut tokens) = match MathTokens::LangTokens.parse(&input) {
+                    Ok(v) => v,
+                    Err(err) => {
+                        println!("[!] Failed to parse: {err}");
+                        continue;
+                    }
+                };
+                for ans in tokens.iter_mut().filter(|t| matches!(t, Token::Ans)) {
+                    let Some(answer) = last_ans else {
+                        println!("[!] No previous answer exists");
+                        continue 'outer;
+                    };
+                    *ans = Token::Number(answer);
+                }
+                let (_, result) = match TokenMath::Expr.parse(tokens.as_ref()) {
+                    Ok(v) => v,
+                    Err(err) => {
+                        println!("[!] Failed to parse: {err}");
+                        continue;
+                    }
+                };
+                last_ans = Some(result);
+                println!("[=] {result:.}")
+            } 
+        }
     }
 }

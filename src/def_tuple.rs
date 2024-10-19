@@ -4,23 +4,28 @@ use super::*;
 macro_rules! impl_tuple {
     (
         $(
-            $($idents: ident : $indices: tt),*;
+            $ident: ident : $index: tt, $($idents: ident : $indices: tt),*;
         )*
     ) => {$(
         #[doc(hidden)]
-        impl<$($idents),*> NamedRule for ($($idents,)*) {
+        impl<$ident, $($idents),*> NamedRule for ($ident, $($idents,)*) {
             fn name(&self) -> Option<&'static str> { Some("<anonymous group>") }
         }
 
         #[doc(hidden)]
         impl<
-            'input, _S: ?Sized + 'input, _O,
-            $($idents: Rule<'input,  _S, Output = _O> + 'input + Copy),*
-        > Rule<'input, _S> for ($($idents,)*) {        
-            type Output = _O;
+            'input, SliceType: ?Sized + 'input,
+            $ident: Rule<'input, SliceType>,
+            $($idents: Rule<'input,  SliceType, Output = $ident::Output>),*
+        > Rule<'input, SliceType> for ($ident, $($idents,)*) {        
+            type Output = $ident::Output;
         
-            fn parse_at<'cursor, 'this, 'index>(&'this self, input: &'cursor mut &'input _S, index: &'index mut usize) -> Result<_O, ParseError> where 'input: 'this {
+            fn parse_at<'cursor, 'this, 'index>(&'this self, input: &'cursor mut &'input SliceType, index: &'index mut usize) -> Result<Self::Output, ParseError> where 'input: 'this {
                 let before = (*input, *index);
+                match self.$index.parse_at(input, index) {
+                    Err(_) => { (*input, *index) = before; }
+                    ok => return ok
+                }
                 $(
                     match self.$indices.parse_at(input, index) {
                         Err(_) => { (*input, *index) = before; }
@@ -43,8 +48,7 @@ macro_rules! impl_tuple {
 #[cfg_attr(any(docsrs, feature = "__internal_test_docs"), doc = r#"The `more_tuple_impls` feature raises the implemented arity to 256, but massively increases compilation time."#)]
 #[cfg_attr(any(docsrs, feature = "__internal_test_docs"), doc = r#"Use only when strictly necessary."#)]
 impl<
-    'input, SliceType: ?Sized + 'input, Output,
-    T
+    'input, SliceType: ?Sized + 'input, Output, T
 > Rule<'input, SliceType> for (T, ) where T: Rule<'input, SliceType, Output = Output> {
     type Output = Output;
 
@@ -53,8 +57,8 @@ impl<
         self.0.parse_at(input, index)
     }
 }
-impl<T> NamedRule for (T, ) {
-    fn name(&self) -> Option<&'static str> { Some("<anonymous group>") }
+impl<T: NamedRule> NamedRule for (T, ) {
+    fn name(&self) -> Option<&'static str> { self.0.name() }
 }
 
 impl_tuple! {
