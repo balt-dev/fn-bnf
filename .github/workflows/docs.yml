@@ -37,12 +37,18 @@ jobs:
         run: |
           mkdir docs
           cargo doc -Zunstable-options -Zrustdoc-scrape-examples --no-deps --features __internal_test_docs -v --target-dir docs
+          cd docs
+          
+      - name: Generate Directory Listings
+        uses: jayanta525/github-pages-directory-listing@v4.0.0
+        with:
+          FOLDER: .
 
       - name: Upload static files as artifact
         id: deployment
-        uses: actions/upload-pages-artifact@v3 # or specific "vX.X.X" version tag for this action
+        uses: actions/upload-pages-artifact@v3
         with:
-          path: docs/
+          path: .
 
   # Deployment job
   deploy:
