@@ -2,7 +2,11 @@ name: Test and build docs
 
 on:
   workflow_dispatch:
-    
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
 
 jobs:
   # Build job
@@ -25,14 +29,14 @@ jobs:
       - name: Test library
         id: test
         run: |
-          cargo test -vv
-          cargo check --example math -vv
+          cargo test -v
+          cargo check --example math -v
 
       - name: Build static files
         id: build
         run: |
           mkdir docs
-          cargo doc -Zunstable-options -Zrustdoc-scrape-examples --no-deps --features __internal_test_docs -vv --target-dir docs
+          cargo doc -Zunstable-options -Zrustdoc-scrape-examples --no-deps --features __internal_test_docs -v --target-dir docs
 
       - name: Upload static files as artifact
         id: deployment
