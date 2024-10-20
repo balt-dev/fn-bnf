@@ -20,7 +20,7 @@ __internal_test_docs = []
 error_in_core = []
 
 [dependencies]
-fn-bnf-macro = { path = "./proc" }
+fn-bnf-macro = { path = "./proc", version = "*" }
 
 [package.metadata.docs.rs]
 cargo-args = ["-Zunstable-options", "-Zrustdoc-scrape-examples"]
