@@ -405,7 +405,6 @@ pub use fn_bnf_macro::NamedRule;
 /// 
 /// Importantly, `'input` is special - it's always in scope, even if not declared,
 /// and is the lifetime of the data that's being passed in.
-/// Everything you return from parsing input must live at least as long as the input itself.
 /// 
 /// Anything that implements `for<'input> Rule<'input, T>`
 /// will work in _any_ grammar of slice type `T` - 
