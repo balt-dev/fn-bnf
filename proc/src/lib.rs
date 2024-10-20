@@ -3,7 +3,7 @@
 #![doc(hidden)] // it's the proc macro who gives a shit
 
 use indexmap::IndexMap;
-use proc_macro_error::{Diagnostic, Level};
+use proc_macro_error2::{Diagnostic, Level};
 use proc_macro2::Span;
 use proc_macro::TokenStream;
 use quote::{quote, TokenStreamExt};
@@ -23,7 +23,7 @@ fn cr8_name() -> syn::Path {
     let found_crate = crate_name("fn-bnf").expect("fn-bnf should be present in `Cargo.toml`");
 
     match found_crate {
-        FoundCrate::Itself => syn::parse_quote!( ::fn-bnf ),
+        FoundCrate::Itself => syn::parse_quote!( ::fn_bnf ),
         FoundCrate::Name(name) => syn::Path {
             leading_colon: Some(syn::token::PathSep::default()),
             segments: [syn::PathSegment { ident: Ident::new(&name, Span::call_site()), arguments: syn::PathArguments::None }]
@@ -493,8 +493,8 @@ pub fn derive_named(input: TokenStream) -> TokenStream {
     TokenStream::from(expanded)
 }
 
+#[proc_macro_error2::proc_macro_error]
 #[proc_macro]
-#[proc_macro_error::proc_macro_error]
 pub fn define(input: TokenStream) -> TokenStream {
     let Grammar {
         attrs, vis, ident, ty, rules, ..
