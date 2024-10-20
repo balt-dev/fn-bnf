@@ -1,4 +1,4 @@
-//! Proc macro for [fn_bnf](https://docs.rs/fn_bnf). Go there. This is not a place of honor.
+//! Proc macro for [fn-bnf](https://docs.rs/fn-bnf). Go there. This is not a place of honor.
 
 #![doc(hidden)] // it's the proc macro who gives a shit
 
@@ -23,7 +23,7 @@ fn cr8_name() -> syn::Path {
     let found_crate = crate_name("fn-bnf").expect("fn-bnf should be present in `Cargo.toml`");
 
     match found_crate {
-        FoundCrate::Itself => syn::parse_quote!( ::fn_bnf ),
+        FoundCrate::Itself => syn::parse_quote!( ::fn-bnf ),
         FoundCrate::Name(name) => syn::Path {
             leading_colon: Some(syn::token::PathSep::default()),
             segments: [syn::PathSegment { ident: Ident::new(&name, Span::call_site()), arguments: syn::PathArguments::None }]
