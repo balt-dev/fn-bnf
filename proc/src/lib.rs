@@ -1,4 +1,6 @@
-#![allow(missing_docs)] // it's the proc macro who gives a shit
+//! Proc macro for [fn_bnf](https://docs.rs/fn_bnf). Go there. This is not a place of honor.
+
+#![doc(hidden)] // it's the proc macro who gives a shit
 
 use indexmap::IndexMap;
 use proc_macro_error::{Diagnostic, Level};
