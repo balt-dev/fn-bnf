@@ -406,7 +406,20 @@ pub type AnyRule<'rule, 'input, In, Out> = &'rule dyn Rule<'input, In, Output = 
 
 /// Runs a function when parsed. Parses nothing, and returns the function's output.
 /// 
-/// The inner function _must not_ call [`Action::parse_at`]! Doing so will cause a runtime panic.
+/// The inner function _must not_ recursively parse this rule! Doing so will cause a runtime panic.
+/// 
+/// ```rust, should_panic
+/// # use fn_bnf::{Action, Rule};
+/// thread_local! {
+///     static ACTION: Action<(), fn()> = Action::new(adversarial);
+/// }
+/// 
+/// fn adversarial() {
+///     ACTION.with(|a| { let _res = a.parse(""); });
+/// }
+/// 
+/// adversarial();
+/// ```
 pub struct Action<O, F: FnMut() -> O>(core::cell::Cell<Option<F>>);
 impl<O, F: FnMut() -> O> Action<O, F> {
     /// Creates a new [`Action`] using a specified function.
