@@ -220,7 +220,7 @@ pub struct Many<'input, T: 'input + ?Sized, R: Rule<'input, T>> {
 }
 
 impl<'input, T: 'input + ?Sized, R: Rule<'input, T>> Many<'input, T, R> {
-    /// Matches a potentially infinite amount of times
+    /// Matches a potentially infinite amount of times.
     pub fn unlimited(rule: R) -> Self {
         Self { rule, limit: None, _p: PhantomData }
     }
@@ -402,3 +402,71 @@ impl<'input, T: ?Sized + 'input, E: core::error::Error + Clone + 'static> Rule<'
 /// };
 /// ```
 pub type AnyRule<'rule, 'input, In, Out> = &'rule dyn Rule<'input, In, Output = Out>;
+
+
+/// Runs a function when parsed. Parses nothing, and returns the function's output.
+/// 
+/// The inner function _must not_ call [`Action::parse_at`]! Doing so will cause a runtime panic.
+pub struct Action<O, F: FnMut() -> O>(core::cell::Cell<Option<F>>);
+impl<O, F: FnMut() -> O> Action<O, F> {
+    /// Creates a new [`Action`] using a specified function.
+    pub fn new(func: F) -> Self {
+        Self(core::cell::Cell::new(Some(func)))
+    }
+}
+impl<O, F: FnMut() -> O> NamedRule for Action<O, F> {
+    fn name(&self) -> Option<&'static str> { Some("Action") }
+}
+impl<'i, S: 'i + ?Sized, O, F: FnMut() -> O> Rule<'i, S> for Action<O, F> {
+    type Output = O;
+
+    fn parse_at<'cursor, 'this, 'index>(&'this self, _input: &'cursor mut &'i S, _index: &'index mut usize)
+        -> Result<Self::Output, ParseError> where 'i: 'this
+    {
+        let mut f = self.0.take().expect("actions must not parse themselves within their own bodies");
+        let ret = f();
+        self.0.set(Some(f));
+        Ok(ret)
+    }
+}
+
+/// Parses similar to [`Many`], but with an separator rule between each parse.
+/// See [`Rule::separated`].
+#[derive(NamedRule)]
+pub struct Separated<'input, T: 'input + ?Sized, R: Rule<'input, T>, S: Rule<'input, T>> {
+    rule: R,
+    separator: S,
+    limit: Option<usize>,
+    _p: PhantomData<&'input T>
+}
+
+impl<'input, T: 'input + ?Sized, R: Rule<'input, T>, S: Rule<'input, T>> Separated<'input, T, R, S> {
+    /// Matches a potentially infinite amount of times.
+    pub fn unlimited(rule: R, separator: S) -> Self {
+        Self { rule, separator, limit: None, _p: PhantomData }
+    }
+
+    /// Matches at most a set amount of times.
+    pub fn limited(rule: R, separator: S, limit: usize) -> Self {
+        Self { rule, separator, limit: Some(limit), _p: PhantomData }
+    }
+}
+
+impl<'input, T: 'input + ?Sized, R: Rule<'input, T>, S: Rule<'input, T>> Rule<'input, T> for Separated<'input, T, R, S> {
+    type Output = Vec<(R::Output, Option<S::Output>)>;
+    
+    fn parse_at<'cursor, 'this, 'index>(&'this self, input: &'cursor mut &'input T, index: &'index mut usize) -> Result<Self::Output, ParseError> where 'input: 'this {
+        let mut arr = Vec::new();
+        let mut i = 0;
+        while let Ok(res) = self.rule.parse_at(input, index) {
+            let Ok(sep_res) = self.separator.parse_at(input, index) else {
+                arr.push((res, None));
+                break;
+            };
+            arr.push((res, Some(sep_res)));
+            i += 1;
+            if self.limit.is_some_and(|lim| i >= lim) { break; }
+        }
+        Ok(arr)
+    }
+}

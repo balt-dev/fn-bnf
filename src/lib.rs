@@ -261,6 +261,18 @@ pub trait Rule<'input, SliceType: ?Sized + 'input>: NamedRule {
         Many::unlimited(self)
     }
 
+    /// Repeats this rule at most a set amount of times, separated by another rule.
+    #[inline]
+    fn take_sep<R: Rule<'input, SliceType>>(self, separator: R, at_most: usize) -> Separated<'input, SliceType, Self, R> where Self: Sized {
+        Separated::limited(self, separator, at_most)
+    }
+
+    /// Repeats this rule forever until it fails, separated by another rule.
+    #[inline]
+    fn hoard_sep<R: Rule<'input, SliceType>>(self, separator: R) -> Separated<'input, SliceType, Self, R> where Self: Sized {
+        Separated::unlimited(self, separator)
+    }
+
     /// Repeats this rule until the end of input, failing if it ever does.
     #[inline]
     fn consume_all(self) -> Consume<'input, SliceType, Self> 

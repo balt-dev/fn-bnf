@@ -55,7 +55,24 @@ fn delim_test() {
     assert!(Test::Double.parse("((").is_ok());
 }
 
-use std::{str::FromStr, marker::PhantomData};
+#[test]
+fn sep_test() {
+
+    define! {
+        grammar Test<str> {
+            Value -> char = _ '!'.prevent(), Any;
+            pub CSVMax<const LIM: usize> -> Vec<(char, Option<char>)> = Value.take_sep(',', LIM);
+            pub CSV -> Vec<(char, Option<char>)> = _ '!'.prevent(), Value.hoard_sep(',');
+        }
+    }
+    assert_eq!(Test::CSVMax::<2>.parse("a,b,c,d,e").unwrap().1, vec![('a', Some(',')), ('b', Some(','))]);
+    assert_eq!(Test::CSVMax::<2>.parse("a,bc,d,e").unwrap().1, vec![('a', Some(',')), ('b', None)]);
+    assert_eq!(Test::CSVMax::<2>.parse("ab,c,d,e").unwrap().1, vec![('a', None)]);
+    assert_eq!(Test::CSVMax::<2>.parse("a,!,c,d,e").unwrap().1, vec![('a', Some(','))]);
+    assert_eq!(Test::CSV.parse("a,b,c,d,e").unwrap().1, vec![('a', Some(',')), ('b', Some(',')), ('c', Some(',')), ('d', Some(',')), ('e', None)]);
+}
+
+use std::{cell::OnceCell, marker::PhantomData, str::FromStr};
 
 define! {
     grammar test_parsing<str> {
@@ -77,4 +94,29 @@ define! {
                 as AnyRule<'_, 'input, str, char>
         };
     }
+}
+
+
+#[test]
+fn action_test() {
+    let mut i = 0;
+    let action = Action::new(move || { let t = i; i += 1; t });
+    let mut idx = 0;
+    assert_eq!(action.parse_at(&mut "", &mut idx).unwrap(), 0);
+    assert_eq!(action.parse_at(&mut "", &mut idx).unwrap(), 1);
+    assert_eq!(action.parse_at(&mut "", &mut idx).unwrap(), 2);
+    let other_action = &action;
+    assert_eq!(other_action.parse_at(&mut "", &mut idx).unwrap(), 3);
+    assert_eq!(action.parse_at(&mut "", &mut idx).unwrap(), 4);
+    assert_eq!(idx, 0)
+}
+
+thread_local! {
+    static ACTION: Action<(), fn()> = Action::new(foo);
+}
+
+#[test]
+#[should_panic]
+fn foo() {
+    ACTION.with(|a| { let _res = a.parse(""); });
 }
