@@ -250,7 +250,11 @@ impl RuleBody {
         let mut element_defs = Vec::<Stmt>::new();
 
         element_defs.push(syn::parse_quote!(
-            let _ = ("min_options: ", #min_options, "max_options:", #max_options);
+            let _ = (
+                "### DEBUG INFORMATION ###",
+                "min_options: ", #min_options,
+                "max_options:", #max_options
+            );
         ));
 
         let variable_names = (0..max_options)
@@ -258,7 +262,7 @@ impl RuleBody {
             .collect_vec();
         let optional_variable_defs = variable_names.iter()
             .skip(min_options)
-            .map(|id| -> Stmt {syn::parse_quote_spanned! {span=> let #id = None;}})
+            .map(|id| -> Stmt {syn::parse_quote_spanned! {span=> let mut #id = None;}})
             .collect_vec();
     
         for (i, option) in group.options.iter().enumerate() {
@@ -328,9 +332,9 @@ impl RuleBody {
                         )
                     } else { &infer };
                     if min_options == 0 {
-                        syn::parse_quote_spanned!(first.span()=> let arg_0: #first_ty = Some(first);)
+                        syn::parse_quote_spanned!(first.span()=> let mut arg_0: #first_ty = Some(first);)
                     } else {
-                        syn::parse_quote_spanned!(first.span()=> let arg_0: #first_ty = first;)
+                        syn::parse_quote_spanned!(first.span()=> let mut arg_0: #first_ty = first;)
                     }
                 }
             }).into_iter();
@@ -355,7 +359,7 @@ impl RuleBody {
                 let Some(name) = names.next() else { break };
                 next_args.extend::<Vec<Stmt>>(syn::parse_quote_spanned!(el.span()=>
                     let rule = { #el };
-                    let #name: #opt_ty = match #cr8::Rule::<'input, #rule_ty>::parse_at(&rule, input, index) {
+                    let mut #name: #opt_ty = match #cr8::Rule::<'input, #rule_ty>::parse_at(&rule, input, index) {
                         Ok(val) => val,
                         Err(err) => #fail_condition
                     };
@@ -374,7 +378,7 @@ impl RuleBody {
                 let Some(name) = names.next() else { break };
                 next_args.extend::<Vec<Stmt>>(syn::parse_quote_spanned!(el.span()=>
                     let rule = { #el };
-                    let #name = match #cr8::Rule::<'input, #rule_ty>::parse_at(&rule, input, index) {
+                    let mut #name = match #cr8::Rule::<'input, #rule_ty>::parse_at(&rule, input, index) {
                         Ok(val) => Some(val),
                         Err(err) => #fail_condition
                     };
@@ -407,7 +411,7 @@ impl RuleBody {
             impl #impl_generics #cr8::Rule<'input, #rule_ty> for #name #generics #where_clause {
                 type Output = #ty;
 
-                #[allow(unused_variables, unreachable_code, unused_labels, unused_parens)]
+                #[allow(unused_variables, unreachable_code, unused_labels, unused_parens, unused_mut)]
                 fn parse_at<'cursor, 'this, 'index>(&'this self, input: &'cursor mut &'input #rule_ty, index: &'index mut usize)
                     -> Result<Self::Output, #cr8::ParseError>
                     where 'input : 'this
